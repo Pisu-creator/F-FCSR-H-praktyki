@@ -1,0 +1,75 @@
+q = - 1993524591318275015328041611344215036460140087963
+d = drop `{1}(1 - q)/2 :[160]
+K_input = 0x0088639d6bf847ed59c6
+IV_input = 0x00112233445566778899
+
+sum_bytes:
+	[160] -> [8] -> Bit
+sum_bytes S i = (S @ i) ^ sum_of_the_rest
+	where sum_of_the_rest = if  160 <= i+8 then False else (sum_bytes S (8+i))
+
+
+register_clock:
+	[242] -> [242]
+register_clock MC = M' # C'
+	where
+		M' = (M >> 1)^(zero # C)^(if M!0==False then zero else zero # d)
+		C' = drop`{78} C''
+		C'' = ((M >> 1)&&(zero # C)) ^ (zero # C &&(if M!0==False then zero else d)) ^ ((if M!0==False then zero else d) && (M >> 1))
+		M = take `{160} MC
+		C = drop `{160} MC
+
+register_multiple_clock:
+	[160] -> [82] -> [8] -> [242]
+register_multiple_clock	M C i = if i > 0x00 then (register_multiple_clock M' C' (i-1)) else M#C 
+	where
+		M' = take `{160} (register_clock (M # zero # C))
+		C' = drop `{160} (register_clock (M # zero # C))
+			
+key_iv_setup:
+	{v}
+	(v>=0,v<=80) =>
+	[80] -> [v] -> [242]
+key_iv_setup K IV = register_multiple_clock M C 160
+	where
+		M = zero # IV # K
+		C = zero
+		
+filter_output:
+	[160] -> [8]
+filter_output M = output_byte
+	where
+		output_byte = [sum_bytes S i | S' <- S
+									 | i <- [0..7]
+					  ]
+		S = M && d
+		
+return_byte:
+	[160] -> [82] -> [8]
+return_byte M C = x
+	where 
+		x = filter_output y
+		y = take `{160}(register_clock (M # C))
+		
+stream:
+	{n,x}
+	(n<=2^^32,x<=80,x>=0) =>
+	[80] -> [x] -> [n*8]
+stream K IV = (join (reverse [return_byte (take `{160} (MC)) (drop `{160} (MC)) | MC <- take (iterate register_clock MC) :[n][242]]))
+	where 
+		MC = key_iv_setup K IV
+
+multiple_clocks_verification: [160]->[82]->Bit
+property multiple_clocks_verification x y = register_clock (x#y) == register_multiple_clock x y 1
+
+stream_works_fine: 
+	{n,x}
+	(1+n<=2^^32,x<=80,x>=0) =>
+	[80]->[x]->Bit
+stream_works_fine K IV = stream `{n} K IV == drop `{8} (stream `{n+1} K IV)
+
+correlation_attack: 
+	{n,x}
+	(1+n<=2^^32,x==80) =>
+	[80]->[x]->Bit
+correlation_attack K IV = stream `{1,80} K IV == stream `{1,80} K IV
